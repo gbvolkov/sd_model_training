@@ -1,6 +1,6 @@
 from AIAssistantsLib.assistants.rag_utils.rag_utils import load_vectorstore
 from AIAssistantsLib.assistants.rag_assistants import get_retriever, KBDocumentPromptTemplate
-from AIAssistantsLib.assistants import RAGAssistantLocal, RAGAssistantMistralAI, SimpleAssistantMistralAI, SimpleAssistantYA
+from AIAssistantsLib.assistants import RAGAssistantLocal, RAGAssistantMistralAI, SimpleAssistantMistralAI, SimpleAssistantYA, RAGAssistantGPT, SimpleAssistantGPT
 import AIAssistantsLib.config as config
 
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
@@ -43,12 +43,12 @@ Remember to be professional, clear, and thorough in your responses. If multiple 
 
     os.environ["LANGCHAIN_TRACING_V2"] = "true"
 
-    question_gen = SimpleAssistantMistralAI(system_prompt)
+    question_gen = SimpleAssistantGPT(system_prompt)
 
     def summarise_text(text):
         brun = True
         text = cleanup_text(text)
-        input_text = f"Сгенерируй вопрос на основе следующего контекста: {text}"
+        input_text = f"Сгенерируй ровно один вопрос на основе следующего контекста: {text}"
         while brun:
             try:
                 question = question_gen.ask_question(input_text)
@@ -66,16 +66,16 @@ Remember to be professional, clear, and thorough in your responses. If multiple 
     with open('prompts/system_prompt_markdown_3.txt', 'r', encoding='utf-8') as f:
         system_prompt = f.read()
     
-    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    os.environ["LANGCHAIN_TRACING_V2"] = "false"
 
     assistants = []
     vectorstore = load_vectorstore(vectorestore_path, config.EMBEDDING_MODEL)
-    retriever = get_retriever(vectorestore_path)
-    assistants.append(RAGAssistantMistralAI(system_prompt, vectorestore_path, output_parser=StrOutputParser))
+    #retriever = get_retriever(vectorestore_path)
+    assistants.append(RAGAssistantGPT(system_prompt, vectorestore_path, output_parser=StrOutputParser))
 
     query = ''
     kb_df = pd.read_csv('kb.csv')
-    kb_df = kb_df.sample(2)
+    kb_df = kb_df.sample(3000)
 
     training_set = []
 
@@ -114,7 +114,8 @@ Remember to be professional, clear, and thorough in your responses. If multiple 
                 except Exception as e:
                     logging.error(f'Error: {str(e)}')
                     time.sleep(2)
-        time.sleep(0.1)
+            print(f"{query}: {len(answer)}")
+        #time.sleep(0.1)
     from datasets import Dataset
 
     training_ds = Dataset.from_list(training_set)
@@ -122,6 +123,7 @@ Remember to be professional, clear, and thorough in your responses. If multiple 
     os.makedirs(save_path, exist_ok=True)
     training_ds.save_to_disk(os.path.join(save_path, "sd_dataset"))
 
+    """
     #training started
     #model_name = "mistralai/Ministral-8B-Instruct-2410"
     model_name = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
@@ -140,4 +142,5 @@ Remember to be professional, clear, and thorough in your responses. If multiple 
     #     bnb_4bit_compute_dtype=torch.bfloat16,
     #     bnb_4bit_quant_type="nf4"
     # )
-)
+    )
+    """
