@@ -165,7 +165,7 @@ def train_model(train_ds, val_ds, model, tokenizer):
     eval_batch_size = 1
     grad_accum_steps = 4
     learning_rate = 1e-4
-    logging_steps = 50
+    logging_steps = 5
     warmup_ratio = 0.1
 
     training_args = TrainingArguments(
