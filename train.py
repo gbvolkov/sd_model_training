@@ -88,7 +88,7 @@ def load_and_split_dataset():
     val_ds = val_ds.map(tokenize_function, batched=True)
 
     train_ds = train_ds.select(range(5))
-    val_ds = train_ds.select(range(5))
+    val_ds = val_ds.select(range(2))
 
     return train_ds, val_ds
 
