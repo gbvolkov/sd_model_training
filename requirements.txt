@@ -1,3 +1,5 @@
 AIAssistantsLib[cpu]@git+https://github.com/gbvolkov/AIAssistantsLibPackage.git
 datasets
 pandas
+matplotlib
+peft
