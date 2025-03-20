@@ -40,13 +40,14 @@ from transformers import (
     DataCollatorForLanguageModeling
 )
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
+from trl import SFTConfig, SFTTrainer
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 
 with open('hf_token.txt', 'r') as f:
     os.environ['HF_TOKEN'] = f.read()    
-
+os.environ['PYTORCH_CUDA_ALLOC_CONF']="expandable_segments:True"
 
 # Global constants
 DATASET_PATH = "data/datasets/sd_dataset"   # Path where the prepared dataset is saved
@@ -62,6 +63,8 @@ DATASET_PATH = "data/datasets/sd_dataset"   # Path where the prepared dataset is
 MODEL_NAME = "google/gemma-3-4b-it"
 OUTPUT_DIR = "gemma-3-4b_sdesk_lora"           # Directory to save the fine-tuned model
 
+
+
 def preprocess(sample):
     """
     Preprocess a dataset sample:
@@ -69,16 +72,25 @@ def preprocess(sample):
     - Use the model's chat template to convert the list of messages into a formatted text string.
     """
     messages = sample["messages"]
+
+    question = messages[2]["content"]
+    context = messages[1]["content"]
+    answer = messages[3]["content"]
+    formatted_old = f"<start_of_turn>user\nAnswer this question using the context below:\nQuestion: {question}\nContext: {context}<end_of_turn>\n<start_of_turn>model\n{answer}<end_of_turn>"
+
+
     if messages and messages[0]["role"] == "system":
-        system_content = messages[0]["content"]
+        system_prompt = messages[0]["content"]
         if len(messages) > 2 and messages[1]["role"] == "user" and messages[2]["role"] == "user":
             #messages[2]["content"] = system_content + "\n\nQuestion:\n" + messages[2]["content"] + "\n\n" + messages[1]["content"]
-            messages[2]["content"] = "\n\nQuestion:\n" + messages[2]["content"] + "\n\n" + messages[1]["content"] + "#EOC\n\n"
+            messages[2]["content"] = "Within Context find document which better answers user question and prepare answer. Documents within Context are separated by #EOD tag.\n\nQuestion:\n" + messages[2]["content"] + "\n\n" + messages[1]["content"] + "#EOC\n\n"
             messages.pop(0)  # Remove the system message after merging
         messages.pop(0)  # Remove the system message after merging
-    # Format the conversation using the tokenizer's chat template (non-tokenized text)
+
+    
     formatted = tokenizer.apply_chat_template(messages, tokenize=False)
     return {"text": formatted}
+    #return {"text": formatted}
 
 
 
@@ -98,11 +110,11 @@ def load_and_split_dataset():
     logging.info("Preprocessing validation dataset...")
     val_ds = val_ds.map(preprocess, remove_columns=["messages"])
 
-    def tokenize_function(examples):
-        return tokenizer(examples["text"], truncation=True, max_length=1024)
+    #def tokenize_function(examples):
+    #    return tokenizer(examples["text"], truncation=True, max_length=1024)
 
-    train_ds = train_ds.map(tokenize_function, batched=True)
-    val_ds = val_ds.map(tokenize_function, batched=True)
+    #train_ds = train_ds.map(tokenize_function, batched=True)
+    #val_ds = val_ds.map(tokenize_function, batched=True)
 
     #train_ds = train_ds.select(range(5))
     #val_ds = val_ds.select(range(2))
@@ -118,6 +130,7 @@ def configure_tokenizer(model_name):
         tokenizer.add_special_tokens({"pad_token": "<pad>"})
     if "eos_token" not in tokenizer.special_tokens_map:
         tokenizer.add_special_tokens({"eos_token": "<eos>"})
+    tokenizer.chat_template = "{{ bos_token }}{% if messages[0]['role'] == 'system' %}{{ raise_exception('System role not supported') }}{% endif %}{% for message in messages %}{{ '<start_of_turn>' + message['role'] + '\n' + message['content'] | trim + '<end_of_turn><eos>\n' }}{% endfor %}{% if add_generation_prompt %}{{'<start_of_turn>model\n'}}{% endif %}"
     return tokenizer
 
 def configure_model(model_name, tokenizer, use_quantization=False):
@@ -128,97 +141,110 @@ def configure_model(model_name, tokenizer, use_quantization=False):
         use_quantization (bool): Set True for limited GPU environments (4-bit quantization).
                                  Otherwise, use full precision (bf16/float16).
     """
-    if not use_quantization:
-        from transformers import AutoTokenizer, Gemma3ForCausalLM
+    from transformers import AutoTokenizer, Gemma3ForCausalLM, BitsAndBytesConfig
+    bnb_config = None
+    if use_quantization:
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16
+        )
 
+    if MODEL_NAME.startswith("google/gemma"):
         model = Gemma3ForCausalLM.from_pretrained(
             model_name,
             device_map="auto",
+            attn_implementation='eager',
+            #quantization_config=bnb_config,
             torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         )
     else:
-        # Option B: Limited GPU setup with 4-bit quantization (requires bitsandbytes)
-        from transformers import BitsAndBytesConfig
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
-            bnb_4bit_quant_type="nf4"
-        )
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
             device_map="auto",
-            quantization_config=bnb_config
+            #quantization_config=bnb_config,
+            torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         )
-    
+
     # Resize embeddings to account for any new tokens added to the tokenizer.
     # Do this BEFORE wrapping the model with LoRA.
     model.resize_token_embeddings(len(tokenizer))
+    model.config.use_cache = False    
     
     # Configure LoRA parameters (common for both setups)
     #lora_rank = 16
-    lora_rank = 32
-    lora_alpha = 64
+    lora_rank = 16 #16
+    lora_alpha = 64 #64
     lora_dropout = 0.05
+    
     peft_config = LoraConfig(
         r=lora_rank,
         lora_alpha=lora_alpha,
         lora_dropout=lora_dropout,
         target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "down_proj", "up_proj", "lm_head", "embed_tokens"],
         bias="none",
-        task_type=TaskType.CAUSAL_LM
+        task_type=TaskType.CAUSAL_LM,
         #task_type=TaskType.QUESTION_ANS
     )
     # Wrap the model with LoRA adapters
-    model = get_peft_model(model, peft_config)
-    logging.info("LoRA adapters added to the model.")
+    #model = get_peft_model(model, peft_config)
+    #logging.info("LoRA adapters added to the model.")
     
-    return model
+    return model, peft_config
 
-def train_model(train_ds, val_ds, model, tokenizer):
+def train_model(train_ds, val_ds, model, tokenizer, peft_config):
     """
     Fine-tunes the model using the Hugging Face Trainer API.
     Configures hyperparameters, sets up a data collator, trains the model,
     evaluates on the validation set, and saves the model and tokenizer.
     """
-    epochs = 2
-    train_batch_size = 1
-    eval_batch_size = 1
-    grad_accum_steps = 4
-    learning_rate = 1e-4
+    per_device_train_batch_size = 1 #4
+    per_device_eval_batch_size = 1
+    gradient_accumulation_steps = 16 #4
     logging_steps = 5
-    warmup_ratio = 0.1
+    learning_rate = 1e-4 # The initial learning rate for the optimizer.
 
-    training_args = TrainingArguments(
+    max_grad_norm = 1.0
+    num_train_epochs=2
+    warmup_ratio = 0.1
+    lr_scheduler_type = "cosine"
+    max_seq_length = 2048
+
+    training_args = SFTConfig(
         output_dir=OUTPUT_DIR,
-        overwrite_output_dir=True,
-        num_train_epochs=epochs,
-        per_device_train_batch_size=train_batch_size,
-        per_device_eval_batch_size=eval_batch_size,
-        gradient_accumulation_steps=grad_accum_steps,
-        evaluation_strategy="epoch",
+        per_device_train_batch_size=per_device_train_batch_size,
+        per_device_eval_batch_size=per_device_eval_batch_size,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        save_strategy="no",
+        eval_strategy="epoch",
         logging_steps=logging_steps,
         learning_rate=learning_rate,
+        max_grad_norm=max_grad_norm,
+        weight_decay=0.1,
         warmup_ratio=warmup_ratio,
-        weight_decay=0.0,
-        lr_scheduler_type="cosine",
-        fp16=not torch.cuda.is_bf16_supported(),  # use FP16 if BF16 is not available
-        bf16=torch.cuda.is_bf16_supported(),
+        lr_scheduler_type=lr_scheduler_type,
+        report_to="tensorboard",
+        bf16=True,
+        hub_private_repo=False,
+        push_to_hub=False,
+        num_train_epochs=num_train_epochs,
         gradient_checkpointing=True,
-        save_strategy="no",
-        dataloader_drop_last=True,
-        #remove_unused_columns=False,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
+        packing=True,
+        max_seq_length=max_seq_length,
+        optim="paged_adamw_8bit",  
     )
+    #data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
 
-    data_collator = DataCollatorForLanguageModeling(tokenizer, mlm=False)
-
-    trainer = Trainer(
+    trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
-        data_collator=data_collator,
+        processing_class=tokenizer,
+        peft_config=peft_config,
     )
-
     logging.info("Starting training...")
     trainer.train()
     logging.info("Training complete.")
@@ -316,9 +342,9 @@ def main():
 
     # Set use_quantization to True if you need to run on a limited GPU
     use_quantization = False  # Change to True for limited GPU setups
-    model = configure_model(MODEL_NAME, tokenizer, use_quantization=use_quantization)
+    model, peft_config = configure_model(MODEL_NAME, tokenizer, use_quantization=use_quantization)
 
-    trainer = train_model(train_ds, val_ds, model, tokenizer)
+    trainer = train_model(train_ds, val_ds, model, tokenizer, peft_config)
     inference_test(model, tokenizer)
 
 if __name__ == "__main__":

@@ -1,3 +1,9 @@
 /data
 *.csv
 /smollm2_sdesk_lora
+/merged_model_dir
+/gemma-2_sdesk_lora
+/Ministral-3b_sdesk_lora
+/Ministral-8B_sdesk_lora
+/gemma-3-4b_sdesk_lora
+hf_token.txt
