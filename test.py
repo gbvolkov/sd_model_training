@@ -54,9 +54,10 @@ else:
     )
 
 
+tokenizer = AutoTokenizer.from_pretrained(OUTPUT_DIR)
+base_model.resize_token_embeddings(len(tokenizer))
 # Load the adapter (LoRA weights)
 model = PeftModel.from_pretrained(base_model, OUTPUT_DIR)
-tokenizer = AutoTokenizer.from_pretrained(OUTPUT_DIR)
 
 
 #model = AutoModelForCausalLM.from_pretrained(MODEL_PATH)
