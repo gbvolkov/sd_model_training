@@ -37,7 +37,9 @@ from transformers import (
     AutoModelForCausalLM,
     TrainingArguments,
     Trainer,
-    DataCollatorForLanguageModeling
+    DataCollatorForLanguageModeling,
+    Gemma3ForCausalLM, 
+    BitsAndBytesConfig
 )
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 from trl import SFTConfig, SFTTrainer
@@ -141,7 +143,6 @@ def configure_model(model_name, tokenizer, use_quantization=False):
         use_quantization (bool): Set True for limited GPU environments (4-bit quantization).
                                  Otherwise, use full precision (bf16/float16).
     """
-    from transformers import AutoTokenizer, Gemma3ForCausalLM, BitsAndBytesConfig
     bnb_config = None
     if use_quantization:
         bnb_config = BitsAndBytesConfig(

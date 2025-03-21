@@ -11,7 +11,8 @@ from AIAssistantsLib.assistants.rag_assistants import get_retriever, KBDocumentP
 from langchain_core.output_parsers import StrOutputParser
 
 from peft import PeftModel
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, Gemma3ForCausalLM
+
 import torch
 import os
 
@@ -19,24 +20,39 @@ os.environ['PYTORCH_CUDA_ALLOC_CONF']="expandable_segments:True"
 
 MODEL_PATH = "./merged_model_dir"
 
-MODEL_NAME = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
-OUTPUT_DIR = "smollm2_sdesk_lora"  # Directory where your adapter is saved
+#MODEL_NAME = "HuggingFaceTB/SmolLM2-1.7B-Instruct"
+#OUTPUT_DIR = "smollm2_sdesk_lora"  # Directory where your adapter is saved
 #MODEL_NAME = "google/gemma-2-2b-it"
 #OUTPUT_DIR = "gemma-2_sdesk_lora"           # Directory to save the fine-tuned model
 #MODEL_NAME = "ministral/Ministral-3b-instruct"
 #OUTPUT_DIR = "Ministral-3b_sdesk_lora"           # Directory to save the fine-tuned model
 #MODEL_NAME = "mistralai/Ministral-8B-Instruct-2410"
 #OUTPUT_DIR = "Ministral-8B_sdesk_lora"           # Directory to save the fine-tuned model
+MODEL_NAME = "google/gemma-3-4b-it"
+OUTPUT_DIR = "gemma-3-4b_sdesk_lora"           # Directory to save the fine-tuned model
 
 
 #MERGED_DIR = "merged_model_dir"    # Directory to save the merged model
 
 # Load the base model as usual
-base_model = AutoModelForCausalLM.from_pretrained(
-    MODEL_NAME,
-    device_map="auto",
-    torch_dtype=torch.bfloat16  # or torch.float16 as needed
-)
+
+
+if MODEL_NAME.startswith("google/gemma"):
+    base_model = Gemma3ForCausalLM.from_pretrained(
+        MODEL_NAME,
+        device_map="auto",
+        attn_implementation='eager',
+        #quantization_config=bnb_config,
+        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    )
+else:
+    base_model = AutoModelForCausalLM.from_pretrained(
+        MODEL_NAME,
+        device_map="auto",
+        #quantization_config=bnb_config,
+        torch_dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    )
+
 
 # Load the adapter (LoRA weights)
 model = PeftModel.from_pretrained(base_model, OUTPUT_DIR)
